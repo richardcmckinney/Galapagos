@@ -1,5 +1,16 @@
-PenBundle  = tortoise_require('engine/plot/pen')
-PlotOps    = tortoise_require('engine/plot/plotops')
+import PlotRecorder from './plotrecorder.js'
+
+ColorModel = tortoise_require('engine/core/colormodel')
+
+PenBundle = tortoise_require('engine/plot/pen')
+PlotOps   = tortoise_require('engine/plot/plotops')
+
+# (Array[String], Object[Any]) => Object[Any]
+pluck = (keys, obj) ->
+  out = {}
+  for key in keys
+    out[key] = obj[key]
+  out
 
 # (String, Plot) => Object[Any]
 basicConfig = (elemID, plot) -> {
@@ -80,14 +91,18 @@ class HighchartsOps extends PlotOps
 
   _chart:              undefined # Highcharts.Chart
   _penNameToSeriesNum: undefined # Object[String, Number]
-  _needsRedraw:        true
+  _needsRedraw:        true      # Boolean
+  _recorder:           undefined # PlotRecorder
 
   constructor: (elemID) ->
+
+    recorder = new PlotRecorder
 
     resize = (xMin, xMax, yMin, yMax) ->
       @_chart.xAxis[0].setExtremes(xMin, xMax, false)
       @_chart.yAxis[0].setExtremes(yMin, yMax, false)
       @_needsRedraw = true
+      recorder.recordResize(xMin, xMax, yMin, yMax)
       return
 
     reset = (plot) ->
@@ -95,21 +110,31 @@ class HighchartsOps extends PlotOps
       @_chart = new Highcharts.Chart(basicConfig(elemID, plot))
       @_penNameToSeriesNum = {}
       @_needsRedraw = true
+      dummy = pluck(["isLegendEnabled", "name", "xLabel", "yLabel"], plot)
+      recorder.recordReset(dummy)
       return
 
     registerPen = (pen) ->
-      num    = @_chart.series.length
+
+      num = @_chart.series.length
+
       series = @_chart.addSeries({
         color:      @colorToRGBString(pen.getColor()),
         data:       [],
         dataLabels: { enabled: false },
         name:       pen.name
       })
+
       type    = @modeToString(pen.getDisplayMode())
-      options = thisOps.seriesTypeOptions(type, pen.getInterval())
+      options = thisOps.seriesTypeOptions(type)
       series.update(options, false)
+
       @_penNameToSeriesNum[pen.name] = num
       @_needsRedraw = true
+
+      if not pen.isFake
+        recorder.recordRegisterPen(pen)
+
       return
 
     # This is a workaround for a bug in CS2 `@` detection: https://github.com/jashkenas/coffeescript/issues/5111
@@ -130,12 +155,17 @@ class HighchartsOps extends PlotOps
     maybeRightmostPoint = null
 
     resetPen = (pen) => () =>
+
       thisOps.penToSeries(pen)?.setData([], false)
       thisOps._needsRedraw = true
       # See ADD_POINT_HACK_1
       maybeLastUpPoint    = null
       # See ADD_POINT_HACK_2
       maybeRightmostPoint = null
+
+      if not pen.isFake
+        recorder.recordResetPen(pen)
+
       return
 
     addPoint = (pen) =>
@@ -143,12 +173,16 @@ class HighchartsOps extends PlotOps
         # Wrong, and disabled for performance reasons --Jason B. (10/19/14)
         # color = @colorToRGBString(pen.getColor())
         # @penToSeries(pen).addPoint({ marker: { fillColor: color }, x: x, y: y })
+
         series = thisOps.penToSeries(pen)
 
         # See ADD_POINT_HACK_1
-        pointY = if (pen.getPenMode() is PenBundle.PenMode.Down)
+        pointY = if pen.isFake or (pen.getPenMode() is PenBundle.PenMode.Down)
           if maybeLastUpPoint isnt null
-            series.addPoint(maybeLastUpPoint, false)
+            series?.addPoint(maybeLastUpPoint, false)
+            [mx, my] = maybeLastUpPoint
+            if not pen.isFake
+              recorder.recordAddPoint(pen, mx, my)
             maybeLastUpPoint = null
           y
         else
@@ -156,7 +190,7 @@ class HighchartsOps extends PlotOps
           null
 
         # See ADD_POINT_HACK_2
-        isColumn = (pen.getDisplayMode() is PenBundle.DisplayMode.Bar)
+        isColumn = pen.isFake or (pen.getDisplayMode() is PenBundle.DisplayMode.Bar)
         if not isColumn
           if not maybeRightmostPoint?
             maybeRightmostPoint = x
@@ -168,16 +202,32 @@ class HighchartsOps extends PlotOps
             else
               maybeRightmostPoint = x
 
-        series.addPoint([x, pointY], false)
+        series?.addPoint([x, pointY], false)
+        if not pen.isFake
+          recorder.recordAddPoint(pen, x, pointY)
+
         thisOps._needsRedraw = true
+
         return
 
     updatePenMode = (pen) => (mode) =>
+
       series = thisOps.penToSeries(pen)
+
       if series?
-        type    = thisOps.modeToString(mode)
-        options = thisOps.seriesTypeOptions(type, pen.getInterval())
+
+        type =
+          if pen.isFake
+            mode
+          else
+            thisOps.modeToString(mode)
+
+        options = thisOps.seriesTypeOptions(type)
         series.update(options, false)
+
+        if not pen.isFake
+          recorder.recordUpdatePenMode(pen, type)
+
       return
 
     # Why doesn't the color change show up when I call `update` directly with a new
@@ -186,11 +236,16 @@ class HighchartsOps extends PlotOps
     # Leave a comment on this webzone if you know why I can't do that.
     # --Jason B. (6/2/15)
     updatePenColor = (pen) => (color) =>
-      hcColor = thisOps.colorToRGBString(color)
-      series  = thisOps.penToSeries(pen)
+
+      hcColor              = thisOps.colorToRGBString(color)
+      series               = thisOps.penToSeries(pen)
       series.options.color = hcColor
       series.update(series.options, false)
       thisOps._needsRedraw = true
+
+      if not pen.isFake
+        recorder.recordUpdatePenColor(pen, color)
+
       return
 
     super(resize, reset, registerPen, resetPen, addPoint, updatePenMode, updatePenColor)
@@ -198,16 +253,70 @@ class HighchartsOps extends PlotOps
     dummy                = { name: "New Plot" }
     @_chart              = new Highcharts.Chart(basicConfig(elemID, dummy))
     @_penNameToSeriesNum = {}
-    #These pops remove the two redundant functions from the export-csv plugin
-    #see https://github.com/highcharts/export-csv and
-    #https://github.com/NetLogo/Galapagos/pull/364#discussion_r108308828 for more info
-    #--Camden Clark (3/27/17)
-    #I heard you like hacks, so I put hacks in your hacks.
-    #Highcharts uses the same menuItems for all charts, so we have to apply the hack once. - JMB November 2017
+    @_recorder           = recorder
+
+    # These pops remove the two redundant functions from the export-csv plugin
+    # see https://github.com/highcharts/export-csv and
+    # https://github.com/NetLogo/Galapagos/pull/364#discussion_r108308828 for more info
+    # --Camden Clark (3/27/17)
+    #
+    # I heard you like hacks, so I put hacks in your hacks.
+    # Highcharts uses the same menuItems for all charts, so we have to apply the hack once. - JMB November 2017
     if not @_chart.options.exporting.buttons.contextButton.menuItems.popped?
       @_chart.options.exporting.buttons.contextButton.menuItems.pop()
       @_chart.options.exporting.buttons.contextButton.menuItems.pop()
       @_chart.options.exporting.buttons.contextButton.menuItems.popped = true
+
+  # () => Array[PlotEvent]
+  cloneInitializer: ->
+
+    recorder = new PlotRecorder
+
+    plot = { isLegendEnabled: @_chart.legend.options.enabled
+           , name:            @_chart.title.textStr
+           , xLabel:          @_chart.xAxis[0].axisTitle?.textStr ? ""
+           , yLabel:          @_chart.yAxis[0].axisTitle?.textStr ? ""
+           }
+
+    recorder.recordReset(plot)
+
+    xExtremes = @_chart.xAxis[0].getExtremes()
+    xMin      = xExtremes.userMin
+    xMax      = xExtremes.userMax
+
+    yExtremes = @_chart.yAxis[0].getExtremes()
+    yMin      = yExtremes.userMin
+    yMax      = yExtremes.userMax
+
+    recorder.recordResize(xMin, xMax, yMin, yMax)
+
+    Object.keys(@_penNameToSeriesNum).map((n) => @penNameToSeries(n)).forEach(
+      (series) ->
+
+        { Bar, Line, Point } = PenBundle.DisplayMode
+
+        displayMode =
+          switch series.type
+            when 'column'  then Bar
+            when 'line'    then Line
+            when 'scatter' then Point
+
+        [, r, g, b] = series.color.match(/rgb\((\d+), (\d+), (\d+)\)/)
+        color       = ColorModel.nearestColorNumberOfRGB(r, g, b)
+
+        pen = { name:           series.name
+              , getColor:       (-> color)
+              , getDisplayMode: (-> displayMode)
+              , isFake:         true
+              }
+
+        recorder.recordRegisterPen(pen)
+
+        return
+
+    )
+
+    recorder.pullRecordedEvents()
 
   # () => Unit
   dispose: ->
@@ -240,7 +349,15 @@ class HighchartsOps extends PlotOps
 
   # (PenBundle.Pen) => Highcharts.Series
   penToSeries: (pen) ->
-    @_chart.series[@_penNameToSeriesNum[pen.name]]
+    @penNameToSeries(pen.name)
+
+  # (String) => Highcharts.Series
+  penNameToSeries: (penName) ->
+    @_chart.series[@_penNameToSeriesNum[penName]]
+
+  # () => Array[PlotEvent]
+  pullPlotEvents: ->
+    @_recorder.pullRecordedEvents()
 
   # () => Unit
   redraw: ->

@@ -8,9 +8,9 @@ import genConfigs from "./config-shims.js"
 import ViewController from "./draw/view-controller.js"
 
 # (Element|String, Array[Widget], String, String,
-#   Boolean, NlogoSource, String, String, BrowserCompiler) => WidgetController
+#   Boolean, NlogoSource, String, String, BrowserCompiler, () => Unit) => WidgetController
 initializeUI = (containerArg, widgets, code, info,
-  isReadOnly, source, workInProgressState, compiler) ->
+  isReadOnly, source, workInProgressState, compiler, performUpdate) ->
 
   container = if typeof(containerArg) is 'string' then document.querySelector(containerArg) else containerArg
 
@@ -22,7 +22,7 @@ initializeUI = (containerArg, widgets, code, info,
   # BCH 11/10/2014
   controller = null
   updateUI   = ->
-    controller.redraw()
+    performUpdate()
     controller.updateWidgets()
 
   # Same as above, need a way to report errors, but we don't have the controller
@@ -45,7 +45,25 @@ initializeUI = (containerArg, widgets, code, info,
     preventScroll: true
   })
 
-  viewModel = widgets.find(({ type }) -> type is 'view')
+  viewWidget = widgets.find(({ type }) -> type is 'view' or type is 'hnwView')
+
+  viewModel = viewWidget ? {
+    dimensions: {
+      maxPxcor:           0
+      maxPycor:           0
+      minPxcor:           0
+      minPycor:           0
+      patchSize:          1
+      wrappingAllowedInX: false
+      wrappingAllowedInY: false
+    }
+    fontSize:         0
+    frameRate:        0
+    showTickCounter:  true
+    tickCounterLabel: "ticks"
+    type:             "dummy-view"
+    updateMode:       "TickBased"
+  }
 
   ractive.set('primaryView', viewModel)
   viewController = new ViewController(container.querySelector('.netlogo-view-container'), viewModel.fontSize)
@@ -54,11 +72,9 @@ initializeUI = (containerArg, widgets, code, info,
   entwine([[viewModel, "fontSize"], [viewController.view, "fontSize"]], viewModel.fontSize)
 
   configs    = genConfigs(ractive, viewController, container, compiler)
-  controller = new WidgetController(ractive, viewController, configs)
-
+  controller = new WidgetController(ractive, viewController, configs, performUpdate)
   setUpWidgets(reportError, widgets, updateUI, controller.plotSetupHelper())
-
-  controlEventTraffic(controller)
+  controlEventTraffic(controller, performUpdate)
   handleWidgetSelection(ractive)
   handleContextMenu(ractive)
 
