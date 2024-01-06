@@ -126,7 +126,7 @@ class HighchartsOps extends PlotOps
       })
 
       type    = @modeToString(pen.getDisplayMode())
-      options = thisOps.seriesTypeOptions(type)
+      options = thisOps.seriesTypeOptions(type, pen.getInterval())
       series.update(options, false)
 
       @_penNameToSeriesNum[pen.name] = num
@@ -222,7 +222,7 @@ class HighchartsOps extends PlotOps
           else
             thisOps.modeToString(mode)
 
-        options = thisOps.seriesTypeOptions(type)
+        options = thisOps.seriesTypeOptions(type, pen.getInterval())
         series.update(options, false)
 
         if not pen.isFake

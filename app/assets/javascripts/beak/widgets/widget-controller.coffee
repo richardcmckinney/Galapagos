@@ -362,6 +362,7 @@ class WidgetController
                 pen = { name:           update.pen.name
                       , getColor:       (-> update.pen.color)
                       , getDisplayMode: (-> PenBundle.DisplayMode.Line)
+                      , getInterval:    (-> update.pen.interval)
                       , isFake:         true
                       }
                 ops.registerPen(pen)
@@ -371,7 +372,8 @@ class WidgetController
                 pen = { name: update.penName, isFake: true }
                 ops.addPoint(pen)(update.x, update.y)
               when "update-pen-mode"
-                pen = { name: update.penName, isFake: true }
+                getInterval = (-> update.interval)
+                pen         = { name: update.penName, getInterval, isFake: true }
                 ops.updatePenMode(pen)(update.mode)
               when "update-pen-color"
                 pen = { name: update.penName, isFake: true }
